@@ -46,10 +46,16 @@ abstract contract ProofOfPossessionTest is RegistrationTestBase {
             vm.recordLogs();
             assertTrue(submit(registration, request(p)));
 
+            // EIP-7708 also logs the fee's transfer, so only the contract's own logs are counted.
             Vm.Log[] memory logs = vm.getRecordedLogs();
-            assertEq(logs.length, 1);
-            assertEq(logs[0].topics.length, 0);
-            assertEq(logs[0].data, record(address(this), p));
+            uint256 n;
+            for (uint256 l; l < logs.length; l++) {
+                if (logs[l].emitter != registration) continue;
+                assertEq(logs[l].topics.length, 0);
+                assertEq(logs[l].data, record(address(this), p));
+                n++;
+            }
+            assertEq(n, 1);
 
             // The only slots written are the fee state (0, 1 and 4), the tail (3) and the
             // request's own slots.

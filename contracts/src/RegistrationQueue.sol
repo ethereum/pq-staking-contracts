@@ -81,8 +81,10 @@ abstract contract RegistrationQueue {
         );
     }
 
-    /// @dev Reverts unless the signature after the EIP's input is a proof of possession.
-    function _checkProofOfPossession(bytes calldata input) private view {
+    /// @dev Reverts unless the signature after the EIP's input is a proof of possession. It's
+    ///      virtual only so the gas measurement can skip the check in a test contract
+    ///      (`test/helpers/Unchecked.sol`). The bytecode is the same as with a private function.
+    function _checkProofOfPossession(bytes calldata input) internal view virtual {
         bytes calldata signature = input[_inputLength():];
         bytes32 xmssPubkey =
             bytes32(input[BLS_PUBKEY_LENGTH:BLS_PUBKEY_LENGTH + XMSS_PUBKEY_LENGTH]);

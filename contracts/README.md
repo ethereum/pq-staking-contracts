@@ -63,10 +63,9 @@ requests added in the last block with requests, the queue head and tail, and tha
 number. Request `i` takes five slots from `5 + 5i` for validators, and four from `5 + 4i` for
 builders.
 
-A call queuing a validator registration costs about 237k gas on fresh storage and 98k when the
-queue reuses its slots, about 46k more than the EIP's bytecode: the verify, and copying the
-signature. The system call dequeues a full block of 1024 records from cold storage with about
-11.7M of its 30M gas, against 11.3M for the EIP's bytecode.
+The system call dequeues a full block of 1024 records from cold storage with about 11.7M of its
+30M gas, against 11.3M for the EIP's bytecode. What the proof adds to a registration is
+[below](#gas-of-the-proof-of-possession).
 
 ## Testing against the EIP
 
@@ -77,6 +76,43 @@ signature only in this repository's request, and checks that they agree on succe
 logs, storage and balance, from any storage, including states no sequence of calls reaches.
 `test/ProofOfPossession.t.sol` checks what the proof binds, on proofs from the generator in
 [`xmss/`](../xmss/).
+
+## Gas of the proof of possession
+
+`scripts/measure-gas.py` measures what the proof adds to a validator registration, on anvil, on
+Amsterdam as Foundry 1.9.0 implements it. It sends one add to the EIP's bytecode, and the same
+add with the signature to `PQValidatorRegistration` and to that contract with the check skipped
+(`test/helpers/Unchecked.sol`), in the three scenarios of the table below. It checks each
+transaction's gasUsed against its intrinsic gas, calldata floor and traced execution, and prints
+every number. `test/VerifyGas.t.sol` snapshots `verify` alone in `snapshots/verify.json`.
+
+```sh
+python3 scripts/measure-gas.py   # needs forge and anvil
+```
+
+gasUsed of one validator registration:
+
+| Scenario | Without the proof | With it |
+| --- | --- | --- |
+| S1: the first request ever | 907,459 | 991,560 |
+| S2: the first request of a block, on a queue used before | 222,019 | 306,120 |
+| S3: a later request in the same block | 114,030 | 198,101 |
+
+The proof adds 84,101 gas in S1 and S2:
+
+| | Gas |
+| --- | --- |
+| The signature's 2404 bytes of calldata | 38,260 |
+| This contract's add without the check, against the EIP's bytecode | 1,009 |
+| Checking the proof: `M`, the leaf index and the verify | 44,832 |
+| Total | 84,101 |
+
+These are single measurements, not averages: every request carries the generator's first proof.
+The check is the execution gas of `PQValidatorRegistration` minus that of the same contract with
+the check skipped, and it's the same in the three scenarios. It depends on the signature by a
+few dozen gas: `verify` alone executes in 43,995 to 44,065 gas over EthLib's four valid vectors.
+The calldata depends on the signature too, at 16 gas per nonzero byte and 4 per zero byte, and
+this one has 17 zero bytes.
 
 ## Using the bytecode
 
@@ -113,6 +149,9 @@ cd contracts
 ```
 
 ## Development
+
+Tests run on Amsterdam as Foundry 1.9.0 implements it (`hardfork` in `foundry.toml`). The
+contracts are compiled for Osaka, since solc 0.8.38 targets Amsterdam only in experimental mode.
 
 ```sh
 forge build
