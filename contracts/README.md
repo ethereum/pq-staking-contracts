@@ -12,18 +12,20 @@ Foundry project for the pq staking contracts. Run all commands from this directo
 
 Validators and builders both create stake through `PQStaking`, then register their stake ID
 in the registration contract for their role. Registration carries one post-quantum key
-(32 bytes) and a proof of possession (2400-byte leanXMSS-K signature); there is no BLS key.
+(32 bytes) and a proof of possession (2404-byte leanXMSS signature); there is no BLS key.
 
-The registration contract verifies the proof of possession (`LeanXmssK`, about 66k gas), so an
+The registration contract verifies the proof of possession (`LeanXmss`, about 45k gas), so an
 invalid one reverts and never reaches the consensus layer. The proof signs
 `M = keccak256(DOMAIN ‖ chain_id ‖ registration_contract ‖ stake_id ‖ pq_pubkey)`, which binds it
-to one stake, one chain and one role, at slot `0xFFFF0000 | (M mod 2¹⁶)`. Slots
+to one stake, one chain and one role, at leaf index `0xFFFF0000 | (M mod 2¹⁶)`. Leaf indices
 `0xFFFF0000`–`0xFFFFFFFF` are reserved for proofs of possession. XMSS leaves are one-time keys,
-so deriving the leaf from `M` gives each registration of a key its own leaf (issue #2).
+so deriving the leaf from `M` gives each registration of a key its own leaf (issue #2). A
+leanXMSS signature carries its leaf index, and the contract rejects one made at any other leaf.
 The consensus layer still checks that the stake exists
 and is unregistered, that the key opens the stake's authorization commitment, and that the key
-is unused. leanXMSS-K is a Keccak instance of leanXMSS defined in this repository; its spec and
-reference implementation are in [`xmss/`](../xmss/).
+is unused. leanXMSS is specified in EthLib's
+[`EthLib/Cryptography/Xmss`](https://github.com/ethereum/EthLib/tree/master/EthLib/Cryptography/Xmss);
+[`xmss/`](../xmss/) has the commit this repository follows and the proof-of-possession format.
 
 Consolidations, partial withdrawals and exits are keyed by stake ID. The consensus layer
 applies the EIP-7251 / EIP-7002 rules, checking the caller against the stake's withdrawal
@@ -72,12 +74,12 @@ Input integers are big-endian, as in EIP-7002. Output integers are little-endian
 | --- | --- | --- | --- | --- |
 | `PQWithdrawal` | 16 bytes: `stake_id (u64) ++ amount_gwei (u64)` | `source_address (20) ++ calldata` | 36 bytes each: `source_address ++ stake_id (u64 LE) ++ amount_gwei (u64 LE)` | 2 / 16 |
 | `PQConsolidation` | 16 bytes: `source_stake_id (u64) ++ target_stake_id (u64)` | `source_address (20) ++ calldata` | 36 bytes each: `source_address ++ source_stake_id (u64 LE) ++ target_stake_id (u64 LE)` | 1 / 2 |
-| `PQValidatorRegistration`, `PQBuilderRegistration` | 2440 bytes: `stake_id (u64) ++ pq_pubkey (32) ++ pq_signature (2400)` | calldata | 2440 bytes each: the calldata with `stake_id` little-endian, i.e. SSZ `List[RegistrationRequest]` of the fixed-size `RegistrationRequest { stake_id: uint64, pq_pubkey: Bytes32, pq_signature: Bytes2400 }` | 2 / 16 |
+| `PQValidatorRegistration`, `PQBuilderRegistration` | 2444 bytes: `stake_id (u64) ++ pq_pubkey (32) ++ pq_signature (2404)` | calldata | 2444 bytes each: the calldata with `stake_id` little-endian, i.e. SSZ `List[RegistrationRequest]` of the fixed-size `RegistrationRequest { stake_id: uint64, pq_pubkey: Bytes32, pq_signature: Bytes2404 }` | 2 / 16 |
 
 Withdrawal and consolidation parameters match EIP-7002 / EIP-7251. The registration
 parameters reuse the EIP-7002 values. A full block of registrations (16) dequeues with about
 2.8M of the 30M system-call gas. Queuing one registration, including verification, costs about
-1.87M gas the first time its storage slots are written and about 0.32M when the queue reuses
+1.85M gas the first time its storage slots are written and about 0.30M when the queue reuses
 them.
 
 Example withdrawal request (full exit of stake 42) with `cast`:

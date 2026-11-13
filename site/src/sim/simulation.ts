@@ -174,7 +174,7 @@ export class Simulation {
   }
 
   /**
-   * Registration with a leanXMSS-K proof of possession, verified by the registration contract.
+   * Registration with a leanXMSS proof of possession, verified by the registration contract.
    * `wrongPqKey` signs validly with another key (passes the EL, fails the CL commitment check);
    * `badPqSignature` corrupts the signature (reverts on the EL).
    */
@@ -189,7 +189,7 @@ export class Simulation {
     const key = tamper.wrongPqKey ? DEMO_KEYS.find((k) => k !== own.key)! : own.key
     const contract = role === 'validator' ? 'PQValidatorRegistration' : 'PQBuilderRegistration'
     const message = popMessage(this.chain.chainId, this.chain.addresses[contract], stakeId, key.pubkey)
-    let pqSignature = signProofOfPossession(key, message)
+    let pqSignature = await signProofOfPossession(key, message)
     if (tamper.badPqSignature) pqSignature = `0x${pqSignature.slice(2, -2)}${pqSignature.slice(-2) === '00' ? '01' : '00'}`
     const fields: RegistrationFields = { stakeId, pqPubkey: key.pubkey, pqSignature }
     return this.request(actor, 'register', `Register #${stakeId} as ${role}`, contract, encodeRegistration(fields), stakeId)

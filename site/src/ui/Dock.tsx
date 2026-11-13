@@ -24,7 +24,7 @@ interface DockProps {
 const TILES: { kind: TxKind; index: string; title: string; caption: string }[] = [
   { kind: 'stake', index: '01', title: 'Stake', caption: 'ETH + withdrawal credentials + key commitment → stake ID' },
   { kind: 'topup', index: '02', title: 'Top up', caption: 'topup(stake_id)' },
-  { kind: 'register', index: '03', title: 'Register', caption: 'PQ key (32 B) + leanXMSS-K proof of possession (2400 B), verified on the EL' },
+  { kind: 'register', index: '03', title: 'Register', caption: 'PQ key (32 B) + leanXMSS proof of possession (2404 B), verified on the EL' },
   { kind: 'consolidate', index: '04', title: 'Consolidate', caption: 'source and target by stake ID' },
   { kind: 'withdraw', index: '05', title: 'Exit / withdraw', caption: 'amount 0 = everything' },
 ]

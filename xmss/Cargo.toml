@@ -1,0 +1,11 @@
+[package]
+name = "leanxmss-vectors"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# leanVM's Rust implementation of leanXMSS, which signs the vectors and the demo keys. leanVM
+# tests it on EthLib's cases. Keep the two `rev`s equal.
+[dependencies]
+primitives = { git = "https://github.com/leanEthereum/leanVM", rev = "f5f3672f2b72d3f89dbbaeff18a53a73c975d620" }
+signatures = { git = "https://github.com/leanEthereum/leanVM", rev = "f5f3672f2b72d3f89dbbaeff18a53a73c975d620" }
