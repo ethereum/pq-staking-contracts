@@ -3,27 +3,31 @@ pragma solidity 0.8.30;
 
 import {Vm} from "forge-std/Vm.sol";
 import {SystemCallTest} from "./helpers/SystemCallTest.sol";
-import {LeanXmssK} from "../src/LeanXmssK.sol";
+import {LeanXmss} from "../src/LeanXmss.sol";
 import {PQStaking} from "../src/PQStaking.sol";
 import {PQValidatorRegistration} from "../src/PQValidatorRegistration.sol";
 import {PQBuilderRegistration} from "../src/PQBuilderRegistration.sol";
 
-contract LeanXmssKHarnessForRegistration {
-    function verify(bytes32 pubkey, uint32 slot, bytes32 message, bytes calldata signature)
+contract LeanXmssHarnessForRegistration {
+    function verify(bytes32 pubkey, bytes32 message, bytes calldata signature)
         external
         pure
         returns (bool)
     {
-        return LeanXmssK.verify(pubkey, slot, message, signature);
+        return LeanXmss.verify(pubkey, message, signature);
+    }
+
+    function signatureIndex(bytes calldata signature) external pure returns (uint32) {
+        return LeanXmss.signatureIndex(signature);
     }
 }
 
-/// Proofs of possession come from xmss/gen_vectors.py. They bind chain id 31337 and the
+/// Proofs of possession come from the generator in xmss/. They bind chain id 31337 and the
 /// registration contract address, so the contracts are etched at the addresses used there.
 contract RegistrationTest is SystemCallTest {
     uint256 internal constant SYSTEM_CALL_GAS_LIMIT = 30_000_000;
     uint256 internal constant MAX_PER_BLOCK = 16;
-    uint256 internal constant REQUEST_LENGTH = 2440; // 8 + 32 + 2400
+    uint256 internal constant REQUEST_LENGTH = 2444; // 8 + 32 + 2404
 
     address internal constant VALIDATORS = address(0x7a11);
     address internal constant BUILDERS = address(0xb111);
@@ -33,7 +37,7 @@ contract RegistrationTest is SystemCallTest {
     function setUp() public {
         vm.etch(VALIDATORS, address(new PQValidatorRegistration()).code);
         vm.etch(BUILDERS, address(new PQBuilderRegistration()).code);
-        json = vm.readFile("test/vectors/leanxmss_k.json");
+        json = vm.readFile("test/vectors/leanxmss_pop.json");
         assertEq(block.chainid, vm.parseJsonUint(json, ".chainId"));
     }
 
@@ -70,54 +74,40 @@ contract RegistrationTest is SystemCallTest {
     }
 
     /// Each registration of key A (validator and builder role) signs with its own PoP leaf,
-    /// derived from the message: 0xFFFF0000 | (M mod 2^16).
-    function test_PopLeafDerivedFromMessage() public view {
-        uint256[3] memory slots;
+    /// derived from the message: 0xFFFF0000 | (M mod 2^16). The signature carries that leaf.
+    function test_PopLeafDerivedFromMessage() public {
+        LeanXmssHarnessForRegistration harness = new LeanXmssHarnessForRegistration();
+        uint256[3] memory leaves;
         for (uint256 i; i < 3; i++) {
             string memory key = string.concat(".registrations[", vm.toString(i), "]");
             bytes32 m = vm.parseJsonBytes32(json, string.concat(key, ".message"));
-            slots[i] = vm.parseJsonUint(json, string.concat(key, ".slot"));
-            assertEq(slots[i], 0xffff0000 | (uint256(m) & 0xffff));
+            leaves[i] = vm.parseJsonUint(json, string.concat(key, ".leafIndex"));
+            assertEq(leaves[i], 0xffff0000 | (uint256(m) & 0xffff));
+            bytes memory signature = vm.parseJsonBytes(json, string.concat(key, ".signature"));
+            assertEq(harness.signatureIndex(signature), leaves[i]);
         }
-        assertNotEq(slots[0], slots[1]);
+        assertNotEq(leaves[0], leaves[1]);
     }
 
-    /// A valid signature over the PoP message at any other PoP leaf is rejected.
+    /// A valid signature over the PoP message at any other PoP leaf is rejected. This is what
+    /// stops the forgery of issue #2, which needs signatures of different messages at one leaf.
     function test_RevertWhen_PopSignedAtWrongLeaf() public {
         string memory key = ".wrongLeafRegistration";
         bytes32 pubkey = vm.parseJsonBytes32(json, string.concat(key, ".pubkey"));
+        bytes32 message = vm.parseJsonBytes32(json, string.concat(key, ".message"));
         bytes memory signature = vm.parseJsonBytes(json, string.concat(key, ".signature"));
-        LeanXmssKHarnessForRegistration harness = new LeanXmssKHarnessForRegistration();
-        assertTrue(
-            harness.verify(
-                pubkey,
-                uint32(vm.parseJsonUint(json, string.concat(key, ".slot"))),
-                vm.parseJsonBytes32(json, string.concat(key, ".message")),
-                signature
-            )
+        LeanXmssHarnessForRegistration harness = new LeanXmssHarnessForRegistration();
+        assertTrue(harness.verify(pubkey, message, signature));
+        assertEq(
+            harness.signatureIndex(signature),
+            vm.parseJsonUint(json, string.concat(key, ".leafIndex"))
         );
+        assertNotEq(harness.signatureIndex(signature), 0xffff0000 | (uint256(message) & 0xffff));
 
         bytes memory request = abi.encodePacked(
             uint64(vm.parseJsonUint(json, string.concat(key, ".stakeId"))), pubkey, signature
         );
         assertFalse(submit(vm.parseJsonAddress(json, string.concat(key, ".contract")), request));
-    }
-
-    /// Regression for issue #2: the PoP that red team agent rt-xmss forged for key A on stake
-    /// 0xBEEF (from signatures that reused leaf 0xFFFFFFFF) is a valid XMSS signature at that
-    /// slot, but the contract now verifies at the leaf derived from the message, and rejects it.
-    function test_RevertWhen_Issue2ForgedPop() public {
-        string memory forged = vm.readFile("test/vectors/issue2_forged_pop.json");
-        uint64 stakeId = uint64(vm.parseJsonUint(forged, ".stakeId"));
-        bytes32 pubkey = vm.parseJsonBytes32(forged, ".pubkey");
-        bytes32 message = vm.parseJsonBytes32(forged, ".message");
-        bytes memory signature = vm.parseJsonBytes(forged, ".signature");
-
-        LeanXmssKHarnessForRegistration harness = new LeanXmssKHarnessForRegistration();
-        assertTrue(harness.verify(pubkey, type(uint32).max, message, signature));
-        assertNotEq(uint256(message) & 0xffff, 0xffff);
-
-        assertFalse(submit(VALIDATORS, abi.encodePacked(stakeId, pubkey, signature)));
     }
 
     /// Output records are the calldata with stake_id little-endian.

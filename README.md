@@ -6,7 +6,7 @@ Staking and registration contracts for pq validators and builders.
 | --- | --- |
 | [`contracts/`](contracts/) | Foundry project: contracts, tests, bytecode export. Released bytecode docs live here. |
 | [`site/`](site/) | Interactive model: the contract bytecode running in an in-browser EVM, with a simulated consensus layer. Deployed to GitHub Pages from `main`. |
-| [`xmss/`](xmss/) | leanXMSS-K (Keccak instance of leanXMSS, specified here until upstream publishes one): spec, Python reference, and the generator for contract test vectors and site demo keys. |
+| [`xmss/`](xmss/) | leanXMSS, the signature scheme of the proofs of possession. EthLib specifies it. This directory says which EthLib commit is followed here, defines the proof-of-possession format, and has the generator for contract test vectors and site demo keys. |
 
 ## Releases
 
