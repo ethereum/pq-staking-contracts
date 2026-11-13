@@ -18,9 +18,9 @@ export const encodeWithdrawal = (stakeId: bigint, amountGwei: bigint): Hex =>
 export const encodeConsolidation = (sourceStakeId: bigint, targetStakeId: bigint): Hex =>
   concat([u64be(sourceStakeId), u64be(targetStakeId)])
 
-/** Post-quantum key and signature sizes; a registration request is exactly 2440 bytes. */
+/** Post-quantum key and signature sizes; a registration request is exactly 2444 bytes. */
 export const PQ_PUBKEY_LENGTH = 32
-export const PQ_SIGNATURE_LENGTH = 2400
+export const PQ_SIGNATURE_LENGTH = 2404
 export const REGISTRATION_LENGTH = 8 + PQ_PUBKEY_LENGTH + PQ_SIGNATURE_LENGTH
 
 export interface RegistrationFields {
@@ -70,7 +70,7 @@ export function decodeConsolidationRecords(out: Uint8Array): ConsolidationRecord
   return records
 }
 
-/** Decode fixed 2440-byte registration records (stake_id little-endian). */
+/** Decode fixed 2444-byte registration records (stake_id little-endian). */
 export function decodeRegistrationRecords(out: Uint8Array): RegistrationFields[] {
   const records: RegistrationFields[] = []
   for (let o = 0; o < out.length; o += REGISTRATION_LENGTH) {
