@@ -73,12 +73,17 @@ abstract contract RegistrationQueue {
     /// @notice The message `M` that a proof of possession signs for the request `input`. It hashes
     ///         the domain, the chain ID as a 32-byte word, and the first 80 bytes of the input,
     ///         which are the BLS public key and the XMSS public key.
-    function _popMessage(bytes calldata input) internal view returns (bytes32) {
-        return keccak256(
-            abi.encodePacked(
-                POP_DOMAIN, block.chainid, input[:BLS_PUBKEY_LENGTH + XMSS_PUBKEY_LENGTH]
-            )
-        );
+    function _popMessage(bytes calldata input) internal view returns (bytes32 m) {
+        bytes32 domain = POP_DOMAIN;
+        // Writes the preimage at the free memory pointer without allocating it, since nothing
+        // reads it after the hash.
+        assembly ("memory-safe") {
+            let p := mload(0x40)
+            mstore(p, domain)
+            mstore(add(p, 0x20), chainid())
+            calldatacopy(add(p, 0x40), input.offset, add(BLS_PUBKEY_LENGTH, XMSS_PUBKEY_LENGTH))
+            m := keccak256(p, add(0x40, add(BLS_PUBKEY_LENGTH, XMSS_PUBKEY_LENGTH)))
+        }
     }
 
     /// @dev Reverts unless the signature after the EIP's input is a proof of possession. It's

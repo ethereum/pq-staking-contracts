@@ -94,18 +94,18 @@ gasUsed of one validator registration:
 
 | Scenario | Without the proof | With it |
 | --- | --- | --- |
-| S1: the first request ever | 907,459 | 991,560 |
-| S2: the first request of a block, on a queue used before | 222,019 | 306,120 |
-| S3: a later request in the same block | 114,030 | 198,101 |
+| S1: the first request ever | 907,459 | 991,219 |
+| S2: the first request of a block, on a queue used before | 222,019 | 305,779 |
+| S3: a later request in the same block | 114,030 | 197,760 |
 
-The proof adds 84,101 gas in S1 and S2:
+The proof adds 83,760 gas in S1 and S2:
 
 | | Gas |
 | --- | --- |
 | The signature's 2404 bytes of calldata | 38,260 |
 | This contract's add without the check, against the EIP's bytecode | 1,009 |
-| Checking the proof: `M`, the leaf index and the verify | 44,832 |
-| Total | 84,101 |
+| Checking the proof: `M`, the leaf index and the verify | 44,491 |
+| Total | 83,760 |
 
 These are single measurements, not averages: every request carries the generator's first proof.
 The check is the execution gas of `PQValidatorRegistration` minus that of the same contract with
