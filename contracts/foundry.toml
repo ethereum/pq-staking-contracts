@@ -4,8 +4,11 @@
 src = "src"
 out = "out"
 libs = ["lib"]
-solc_version = "0.8.30"
-evm_version = "prague"
+solc_version = "0.8.38"
+evm_version = "osaka"
+# Tests run on Amsterdam, as Foundry implements it. The bytecode targets Osaka, since solc
+# 0.8.38 only compiles for Amsterdam in experimental mode.
+hardfork = "amsterdam"
 optimizer = true
 optimizer_runs = 200
 # Strip the CBOR metadata trailer: bytecode then depends only on the code and

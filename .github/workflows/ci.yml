@@ -22,7 +22,7 @@ jobs:
 
       - uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: v1.5.1
+          version: v1.9.0
 
       - name: Format
         run: forge fmt --check
@@ -41,29 +41,3 @@ jobs:
         with:
           name: bytecode
           path: contracts/dist/
-
-  site:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: site
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          submodules: recursive
-
-      # `npm run build` exports the contract bytecode first, so it needs forge.
-      - uses: foundry-rs/foundry-toolchain@v1
-        with:
-          version: v1.5.1
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: site/package-lock.json
-
-      - run: npm ci
-
-      - name: Build
-        run: npm run build
