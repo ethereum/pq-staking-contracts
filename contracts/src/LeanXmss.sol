@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.30;
+pragma solidity 0.8.38;
 
 /// @title LeanXmss
 /// @notice Verifier for leanXMSS: two layers of height-16 XMSS over WOTS+C one-time keys

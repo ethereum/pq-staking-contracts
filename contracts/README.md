@@ -128,7 +128,7 @@ invalidates every block.
 
 ### Reproducing a release
 
-Compiler settings are pinned in [`foundry.toml`](foundry.toml) (solc 0.8.30, EVM `prague`,
+Compiler settings are pinned in [`foundry.toml`](foundry.toml) (solc 0.8.38, EVM `osaka`,
 optimizer 200 runs).
 
 ```sh

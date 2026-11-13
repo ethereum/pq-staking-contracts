@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.30;
+pragma solidity 0.8.38;
 
 /// @notice EIP-7002-style system contract: request queue with a dynamic per-request fee.
 /// @dev The interface is raw calldata, not the Solidity ABI; the contract has no ABI functions

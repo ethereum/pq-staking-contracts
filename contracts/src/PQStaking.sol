@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.30;
+pragma solidity 0.8.38;
 
 /// @title PQStaking
 /// @notice Staking contract following EIP-8413 (Decouple Stake from Validator Registration).

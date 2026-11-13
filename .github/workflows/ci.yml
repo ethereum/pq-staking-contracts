@@ -22,7 +22,7 @@ jobs:
 
       - uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: v1.5.1
+          version: v1.9.0
 
       - name: Format
         run: forge fmt --check
