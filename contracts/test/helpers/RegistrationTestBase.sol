@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.38;
 
-import {SystemCallTest} from "./SystemCallTest.sol";
+import {Test} from "forge-std/Test.sol";
 import {PQValidatorRegistration} from "../../src/PQValidatorRegistration.sol";
 import {PQBuilderRegistration} from "../../src/PQBuilderRegistration.sol";
 
 /// Shared setup for the registration tests: one registration contract, the EIP's bytecode it
 /// implements, and the proofs of possession from the generator in xmss/. Each test runs once for
 /// the validator contract and once for the builder contract.
-abstract contract RegistrationTestBase is SystemCallTest {
+abstract contract RegistrationTestBase is Test {
     struct Proof {
         bytes blsPubkey;
         bytes32 xmssPubkey;
@@ -17,6 +17,7 @@ abstract contract RegistrationTestBase is SystemCallTest {
         bytes signature;
     }
 
+    address internal constant SYSTEM_ADDRESS = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
     uint256 internal constant SIGNATURE_LENGTH = 2404;
     uint256 internal constant QUEUE_OFFSET = 5;
     uint256 internal constant SYSTEM_CALL_GAS_LIMIT = 30_000_000;
@@ -36,6 +37,19 @@ abstract contract RegistrationTestBase is SystemCallTest {
     }
 
     function isValidator() internal pure virtual returns (bool);
+
+    /// Calls the fee getter, which takes empty calldata and no value and returns a 32-byte word.
+    function feeOf(address target) internal returns (uint256) {
+        (bool ok, bytes memory out) = target.call("");
+        assertTrue(ok, "fee getter failed");
+        assertEq(out.length, 32);
+        return abi.decode(out, (uint256));
+    }
+
+    /// Sends a request that pays exactly the current fee, and returns whether it was accepted.
+    function submit(address target, bytes memory data) internal returns (bool ok) {
+        (ok,) = target.call{value: feeOf(target)}(data);
+    }
 
     // --- The EIP's parameters ---------------------------------------------------------------
 
