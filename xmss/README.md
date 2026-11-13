@@ -7,8 +7,7 @@ a Lean implementation of the note "leanXMSS for Ethereum PQ-Consensus" in leanVM
 
 This repository follows EthLib at the commit in
 [`contracts/test/vectors/ethlib/COMMIT`](../contracts/test/vectors/ethlib/COMMIT). The Solidity
-verifier (`contracts/src/LeanXmss.sol`) and the site signer (`site/src/chain/xmss.ts`) must match
-the spec at that commit byte for byte.
+verifier (`contracts/src/LeanXmss.sol`) must match the spec at that commit byte for byte.
 
 | | |
 | --- | --- |
@@ -44,24 +43,22 @@ about `n² / 2¹⁷` for `n` registrations of one key (0.005% for 3). A signer M
 leaves it has used and refuse to sign a different message on one of them; the operator then
 registers with another stake.
 
-## Vectors and demo keys
+## Vectors
 
 | Path | Contents | Written by |
 | --- | --- | --- |
 | `contracts/test/vectors/ethlib/xmss/` | EthLib's `verify` and `signature_index` cases | `./sync-vectors.sh <ethlib-commit>` |
 | `contracts/test/vectors/leanxmss_pop.json` | Proofs of possession for the registration tests | `cargo run --release` |
-| `site/src/keys/leanxmss-keys.json` | The site's 12 demo keys | `cargo run --release` |
 
 ```sh
 ./sync-vectors.sh <ethlib-commit>   # copies EthLib's cases at that commit and records it
-cargo run --release                 # ~30 s on 16 cores
+cargo run --release                 # ~20 s on 16 cores
 ```
 
 The generator (`src/main.rs`) signs with leanVM's Rust implementation of leanXMSS, at the commit
-pinned in [`Cargo.toml`](Cargo.toml). leanVM tests it on the same EthLib cases. For the site keys
-the generator also rebuilds the PoP bottom tree, which that implementation doesn't expose, and
-checks it against one of its signatures. The outputs are committed; CI does not regenerate them.
+pinned in [`Cargo.toml`](Cargo.toml). leanVM tests it on the same EthLib cases. The outputs are
+committed; CI does not regenerate them.
 
 To follow a newer spec, run `./sync-vectors.sh` with the new EthLib commit, and fix the verifier
-and the site signer until the tests pass. If the scheme changed, also move the leanVM commit in
-`Cargo.toml` to one that follows it and run the generator again.
+until the tests pass. If the scheme changed, also move the leanVM commit in `Cargo.toml` to one
+that follows it and run the generator again.

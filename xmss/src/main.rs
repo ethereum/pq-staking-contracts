@@ -1,9 +1,8 @@
-//! Generates the proof-of-possession vectors of the contract tests and the demo keys of the
-//! site, with leanVM's implementation of leanXMSS. Run with `--release`.
+//! Generates the proof-of-possession vectors for the contract tests, using leanVM's
+//! implementation of leanXMSS. Run with `--release`.
 //!
-//! Outputs (committed):
+//! Output (committed):
 //!   contracts/test/vectors/leanxmss_pop.json
-//!   site/src/keys/leanxmss-keys.json
 
 use std::collections::HashMap;
 use std::fs;
@@ -14,7 +13,6 @@ use primitives::hash::hash;
 use signatures::lean_xmss::*;
 
 const CONTRACT_VECTORS: &str = "../contracts/test/vectors/leanxmss_pop.json";
-const SITE_KEYS: &str = "../site/src/keys/leanxmss-keys.json";
 
 /// The forge tests etch the registration contracts at these addresses, on this chain id.
 const FORGE_CHAIN_ID: u64 = 31337;
@@ -25,34 +23,11 @@ const BUILDER_REGISTRATION: [u8; 20] = address(0xb111);
 const POP_TREE: u32 = 0xFFFF;
 const POP_LEAF_BASE: LeafIndex = POP_TREE << LAYER_HEIGHT;
 
-const SITE_KEY_COUNT: usize = 12;
-/// The site stores this level of the PoP bottom tree, and rebuilds the 2^8-leaf subtree under one
-/// of its nodes for the levels below.
-const SITE_STORED_LEVEL: usize = 8;
-
-/// The leaf index, then the two layers.
-const LAYER_SIG_SIZE: usize = (SIG_SIZE - size_of::<LeafIndex>()) / 2;
-/// The address type of the hash that starts a key's chains, `A_prf` in the spec.
-const TWEAK_PRF: u8 = 0;
-
 fn main() {
-    let (vectors, site_keys) = thread::scope(|s| {
-        let vectors = s.spawn(contract_vectors);
-        let keys: Vec<_> = (0..SITE_KEY_COUNT)
-            .map(|n| s.spawn(move || site_key(n)))
-            .collect();
-        let keys: Vec<_> = keys.into_iter().map(|key| key.join().unwrap()).collect();
-        (
-            vectors.join().unwrap(),
-            format!("[\n{}\n]\n", keys.join(",\n")),
-        )
-    });
-    for (path, json) in [(CONTRACT_VECTORS, vectors), (SITE_KEYS, site_keys)] {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, json).unwrap();
-        println!("wrote {}", path.canonicalize().unwrap().display());
-    }
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(CONTRACT_VECTORS);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, contract_vectors()).unwrap();
+    println!("wrote {}", path.canonicalize().unwrap().display());
 }
 
 /// A key's seed, from a label: these keys are public.
@@ -201,109 +176,6 @@ fn contract_vectors() -> String {
             ("wrongLeafRegistration", wrong_leaf.json("  ")),
         ],
     ) + "\n"
-}
-
-/// Demo key `n` of the site, as a JSON object: what the site needs to sign a proof of possession
-/// at any leaf of the PoP tree without building the tree.
-fn site_key(n: usize) -> String {
-    let seed = seed(&format!("site demo key {n}"));
-    let (sk, pk) = key_gen_from_seed(seed);
-    let pubkey = pk.to_bytes();
-    let scheme_seed = scheme_seed(&seed);
-    let pp = public_param(&scheme_seed);
-    assert_eq!(pp, pubkey[N..]);
-
-    // The top layer signs the PoP tree's root, so it is the same for every leaf of the tree. The
-    // reference only gives it inside a signature, so sign once at the tree's first leaf and keep
-    // the top layer. The bottom layer is checked against the tree below and dropped: that leaf
-    // has revealed nothing, and the site can still sign a proof of possession with it.
-    let message = hash(b"pq-staking-contracts top layer");
-    let signature = sign(&sk, &message, POP_LEAF_BASE).unwrap().to_bytes();
-    let (bottom, top) = signature[size_of::<LeafIndex>()..].split_at(LAYER_SIG_SIZE);
-
-    let levels = bottom_tree(&pp, &scheme_seed, POP_TREE);
-    let (randomizer, rest) = bottom.split_at(RANDOMIZER_LEN);
-    let (values, path) = rest.split_at(V * N);
-    let values: Vec<Digest> = values.chunks(N).map(|v| v.try_into().unwrap()).collect();
-    let (_, leaf) = wots_leaf(
-        &pp,
-        0,
-        POP_LEAF_BASE,
-        &message,
-        randomizer.try_into().unwrap(),
-        values.as_slice().try_into().unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        leaf, levels[0][0],
-        "the rebuilt tree has the reference's first leaf"
-    );
-    // The first leaf's siblings are node 1 of each level, which between them cover every other
-    // leaf.
-    let rebuilt_path: Vec<u8> = levels[..LAYER_HEIGHT]
-        .iter()
-        .flat_map(|level| level[1])
-        .collect();
-    assert_eq!(
-        path, rebuilt_path,
-        "the rebuilt tree has the reference's path"
-    );
-
-    eprintln!("site key {n} done");
-    object(
-        "  ",
-        &[
-            ("seed", hex(&seed)),
-            ("pubkey", hex(&pubkey)),
-            ("topSignature", hex(top)),
-            ("storedLevel", SITE_STORED_LEVEL.to_string()),
-            (
-                "bottomLevelNodes",
-                hex(levels[SITE_STORED_LEVEL].as_flattened()),
-            ),
-            ("bottomRoot", hex(&levels[LAYER_HEIGHT][0])),
-        ],
-    )
-}
-
-/// The leaf of bottom key `e`, from the seed: the hash of the ends of its chains.
-fn bottom_leaf(pp: &PublicParam, seed: &SchemeSeed, e: u32) -> Digest {
-    let mut ends = [[0; N]; V];
-    for (t, pair) in ends.chunks_mut(2).enumerate() {
-        // One hash of the seed starts two chains, one from each half.
-        let starts = hasher(pp, &tweak(TWEAK_PRF, layer_hi(0, t as u32), e))
-            .update(seed.as_bytes())
-            .finalize();
-        for (half, end) in pair.iter_mut().enumerate() {
-            let start = starts[half * N..][..N].try_into().unwrap();
-            *end = chain(pp, 0, e, 2 * t + half, 0, CHAIN_LEN - 1, start);
-        }
-    }
-    th(
-        pp,
-        &tweak(TWEAK_LEAF, layer_hi(0, 0), e),
-        ends.as_flattened(),
-    )
-}
-
-/// Bottom tree `tree`, level by level: level 0 its leaves, level 16 its root.
-fn bottom_tree(pp: &PublicParam, seed: &SchemeSeed, tree: u32) -> Vec<Vec<Digest>> {
-    let first = tree << LAYER_HEIGHT;
-    let leaves = (0..1 << LAYER_HEIGHT).map(|k| bottom_leaf(pp, seed, first | k));
-    let mut levels: Vec<Vec<Digest>> = vec![leaves.collect()];
-    for level in 1..=LAYER_HEIGHT {
-        // A bottom node's index counts from the layer's first leaf, not the tree's.
-        let up = levels[level - 1].chunks(2).zip(first >> level..);
-        let up = up.map(|(children, j)| {
-            th(
-                pp,
-                &tweak(TWEAK_NODE, layer_hi(0, level as u32), j),
-                children.as_flattened(),
-            )
-        });
-        levels.push(up.collect());
-    }
-    levels
 }
 
 const fn address(low: u16) -> [u8; 20] {
