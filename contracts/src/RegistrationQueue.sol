@@ -2,87 +2,223 @@
 pragma solidity 0.8.38;
 
 import {LeanXmss} from "./LeanXmss.sol";
-import {SystemRequestQueue} from "./SystemRequestQueue.sol";
 
-/// @notice Role registration queue: binds a post-quantum key to a stake created in `PQStaking`.
-/// @dev The proof of possession is a leanXMSS signature verified here, so an invalid one
-///      reverts on the execution layer and never reaches the consensus layer. The consensus
-///      layer still checks that the stake exists and is unregistered, that the key opens the
-///      stake's authorization commitment, and that the key is unused. A rejected registration
-///      does not lose the stake.
+/// @notice EIP-8483's PQ registration request contract, which also checks a leanXMSS proof of
+///         possession when a request is added.
+/// @dev The contract behaves like the EIP's bytecode except for one thing: a request carries a
+///      2404-byte leanXMSS signature after the EIP's input, and the contract rejects the request
+///      unless that signature is a proof of possession. That is, a signature at leaf 0 by the
+///      XMSS key in the first 32 bytes of `pq_data`, over
+///        M = keccak256(POP_DOMAIN ‖ chain_id (32) ‖ bls_pubkey (48) ‖ xmss_public_key (32)).
+///      The signature isn't stored or logged, so the queue, the log and the system call's output
+///      are the same as the EIP's.
 ///
-///      Proof of possession: signature over
-///        M = keccak256(POP_DOMAIN ‖ chain_id (32) ‖ this contract (20) ‖ stake_id (8) ‖ pq_pubkey (32))
-///      at leaf index `POP_LEAF_BASE | (M mod 2^16)`. The leaf indices of bottom tree 0xFFFF are
-///      reserved for proofs of possession and never sign attestations. XMSS leaves are one-time
-///      keys, so the leaf is derived from M: each distinct registration (chain, role, stake) of a
-///      key signs with its own leaf (issue #2). A leanXMSS signature carries its leaf index, and
-///      one made at any other leaf is rejected. The contract address binds the role, so a
-///      validator registration cannot be replayed into the builder contract or the reverse.
+///      There is no Solidity ABI. As in the EIP, calls are dispatched on the caller and the
+///      calldata size, and reverts carry no data:
+///      - A call from `SYSTEM_ADDRESS` dequeues up to the per-block maximum and returns the
+///        records. If it has calldata, it also disables the queue by setting the excess to
+///        `EXCESS_INHIBITOR`. If it doesn't, it re-enables a disabled queue with a fresh fee
+///        state.
+///      - A call with empty calldata and no value returns the fee as a 32-byte word.
+///      - A request (input ‖ signature) is added to the queue if it pays at least the fee. The
+///        contract keeps the whole payment.
 ///
-///      Request calldata (exactly 2444 bytes):
-///        stake_id (u64 BE) ++ pq_pubkey (32) ++ pq_signature (2404)
-///      Log: log0, data = calldata
-///      System call output: concatenated 2444-byte records, i.e. SSZ `List[RegistrationRequest]`
-///      of the fixed-size container
-///        RegistrationRequest { stake_id: uint64, pq_pubkey: Bytes32, pq_signature: Bytes2404 }
-///      Each record is the calldata with stake_id converted to little-endian.
-abstract contract RegistrationQueue is SystemRequestQueue {
-    uint256 internal constant TARGET_REQUESTS_PER_BLOCK = 2;
-    uint256 internal constant MAX_REQUESTS_PER_BLOCK = 16;
-    uint256 internal constant PQ_PUBKEY_LENGTH = 32;
-    uint256 internal constant PQ_SIGNATURE_LENGTH = LeanXmss.SIGNATURE_LENGTH;
+///      The storage layout is the EIP's. Slots 0 to 4 hold the excess, the number of requests
+///      added in the last block that had any, the queue head and tail, and that block's number.
+///      Request `i` takes `_slotsPerRequest()` slots starting at `5 + i * _slotsPerRequest()`:
+///      the source address, then the input in 32-byte slots, with the last one zero-padded.
+///      The arithmetic is unchecked and follows the EIP's order of operations, so the contract
+///      matches the EIP's bytecode from any storage state.
+abstract contract RegistrationQueue {
+    address internal constant SYSTEM_ADDRESS = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
+    uint256 internal constant EXCESS_INHIBITOR = type(uint256).max;
+    uint256 internal constant MIN_REQUEST_FEE = 1;
+    uint256 internal constant REQUEST_FEE_UPDATE_FRACTION = 17;
+    uint256 internal constant QUEUE_OFFSET = 5;
 
-    /// @dev stake_id (8) + pq_pubkey + pq_signature.
-    uint256 internal constant REQUEST_LENGTH = 8 + PQ_PUBKEY_LENGTH + PQ_SIGNATURE_LENGTH;
-
-    /// @dev First leaf index of the PoP range (bottom tree 0xFFFF); the leaf in it comes from M.
-    uint32 internal constant POP_LEAF_BASE = 0xffff0000;
+    uint256 internal constant BLS_PUBKEY_LENGTH = 48;
+    uint256 internal constant XMSS_PUBKEY_LENGTH = 32;
+    uint32 internal constant POP_LEAF_INDEX = 0;
     bytes32 internal constant POP_DOMAIN =
         keccak256("leanXMSS registration proof of possession v1");
 
-    /// @dev Raw request calldata, validated on entry.
-    mapping(uint256 index => bytes) private queue; // slot 4
+    uint256 internal excess; // slot 0
+    uint256 internal count; // slot 1
+    uint256 internal queueHead; // slot 2
+    uint256 internal queueTail; // slot 3
+    uint256 internal lastBlock; // slot 4
 
-    function _addRequest(uint256 index, bytes calldata input) internal override {
-        if (input.length != REQUEST_LENGTH) revert();
-        uint64 stakeId = uint64(bytes8(input[0:8]));
-        _checkStakeId(stakeId);
+    fallback(bytes calldata input) external payable returns (bytes memory) {
+        if (msg.sender == SYSTEM_ADDRESS) _processSystemCall();
 
-        bytes32 pubkey = bytes32(input[8:40]);
-        bytes32 message =
-            keccak256(abi.encodePacked(POP_DOMAIN, block.chainid, address(this), stakeId, pubkey));
-        uint32 leaf = POP_LEAF_BASE | uint32(uint16(uint256(message)));
-        bytes calldata signature = input[40:];
-        if (LeanXmss.signatureIndex(signature) != leaf) revert();
-        if (!LeanXmss.verify(pubkey, message, signature)) revert();
+        (uint256 currentExcess, uint256 currentCount) = _feeState();
+        uint256 fee = _fee(currentExcess, currentCount);
+        if (input.length == 0) {
+            if (msg.value != 0) revert();
+            return abi.encode(fee);
+        }
 
-        queue[index] = input;
-        _log0(input);
+        if (input.length != _inputLength() + LeanXmss.SIGNATURE_LENGTH) revert();
+        if (msg.value < fee) revert();
+        if (currentCount >= _maxRequestsAddedPerBlock()) revert();
+        _checkProofOfPossession(input);
+
+        excess = currentExcess;
+        count = currentCount + 1;
+        lastBlock = block.number;
+        _enqueue();
+        return "";
     }
 
-    function _targetRequestsPerBlock() internal pure override returns (uint256) {
-        return TARGET_REQUESTS_PER_BLOCK;
+    /// @notice The message `M` that a proof of possession signs for the request `input`. It hashes
+    ///         the domain, the chain ID as a 32-byte word, and the first 80 bytes of the input,
+    ///         which are the BLS public key and the XMSS public key.
+    function _popMessage(bytes calldata input) internal view returns (bytes32) {
+        return keccak256(
+            abi.encodePacked(
+                POP_DOMAIN, block.chainid, input[:BLS_PUBKEY_LENGTH + XMSS_PUBKEY_LENGTH]
+            )
+        );
     }
 
-    function _maxRequestsPerBlock() internal pure override returns (uint256) {
-        return MAX_REQUESTS_PER_BLOCK;
+    /// @dev Reverts unless the signature after the EIP's input is a proof of possession.
+    function _checkProofOfPossession(bytes calldata input) private view {
+        bytes calldata signature = input[_inputLength():];
+        bytes32 xmssPubkey =
+            bytes32(input[BLS_PUBKEY_LENGTH:BLS_PUBKEY_LENGTH + XMSS_PUBKEY_LENGTH]);
+        if (LeanXmss.signatureIndex(signature) != POP_LEAF_INDEX) revert();
+        if (!LeanXmss.verify(xmssPubkey, _popMessage(input), signature)) revert();
     }
 
-    function _encodeRequests(uint256 start, uint256 n)
-        internal
-        view
-        override
-        returns (bytes memory out)
-    {
-        out = new bytes(REQUEST_LENGTH * n);
-        uint256 pos;
-        for (uint256 i; i < n; i++) {
-            bytes memory raw = queue[start + i];
-            // stake_id is the first 8 bytes of the request.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            pos = _write(out, pos, abi.encodePacked(_le64(uint64(bytes8(raw)))));
-            pos = _copy(out, pos, raw, 8, REQUEST_LENGTH - 8);
+    /// @dev Returns the excess and the number of requests added in this block. If none was added
+    ///      yet, it rolls the state forward first: the last block's count is added to the excess,
+    ///      which then decays by the target for every block since.
+    function _feeState() private view returns (uint256 currentExcess, uint256 currentCount) {
+        currentExcess = excess;
+        if (currentExcess == EXCESS_INHIBITOR) revert();
+        currentCount = count;
+        uint256 last = lastBlock;
+        if (block.number != last) {
+            unchecked {
+                uint256 decay = _targetRequestsPerBlock() * (block.number - last);
+                uint256 total = currentExcess + currentCount;
+                currentExcess = total > decay ? total - decay : 0;
+            }
+            currentCount = 0;
         }
     }
+
+    /// @dev The fee for the next request. Requests added in this block above the target count
+    ///      toward the excess.
+    function _fee(uint256 currentExcess, uint256 currentCount) private pure returns (uint256) {
+        uint256 target = _targetRequestsPerBlock();
+        unchecked {
+            uint256 exponent =
+                currentCount > target ? currentExcess + (currentCount - target) : currentExcess;
+            return _fakeExponential(MIN_REQUEST_FEE, exponent, REQUEST_FEE_UPDATE_FRACTION);
+        }
+    }
+
+    /// @dev Approximates `factor * e ** (numerator / denominator)`, as in EIP-7002.
+    function _fakeExponential(uint256 factor, uint256 numerator, uint256 denominator)
+        private
+        pure
+        returns (uint256 output)
+    {
+        unchecked {
+            uint256 accum = factor * denominator;
+            for (uint256 i = 1; accum > 0; i++) {
+                output += accum;
+                accum = (accum * numerator) / (denominator * i);
+            }
+            return output / denominator;
+        }
+    }
+
+    /// @dev Stores the request at the queue's tail and logs its record: the caller followed by the
+    ///      input.
+    function _enqueue() private {
+        uint256 inputLength = _inputLength();
+        uint256 slots = _slotsPerRequest();
+        assembly ("memory-safe") {
+            let tail := sload(queueTail.slot)
+            let slot := add(QUEUE_OFFSET, mul(tail, slots))
+            sstore(slot, caller())
+            // Stores the input in 32-byte slots. The signature follows the input in calldata,
+            // so the last slot is masked to keep only the input's bytes.
+            for { let k := 1 } lt(k, slots) { k := add(k, 1) } {
+                let offset := shl(5, sub(k, 1))
+                let word := calldataload(offset)
+                let rest := sub(inputLength, offset)
+                if lt(rest, 32) { word := and(word, not(shr(shl(3, rest), not(0)))) }
+                sstore(add(slot, k), word)
+            }
+
+            let record := mload(0x40)
+            mstore(record, shl(96, caller()))
+            calldatacopy(add(record, 20), 0, inputLength)
+            log0(record, add(20, inputLength))
+            sstore(queueTail.slot, add(tail, 1))
+        }
+    }
+
+    /// @dev Dequeues up to the per-block maximum, sets or clears the inhibitor, and returns the
+    ///      dequeued records. It ends the call, so nothing after it runs.
+    function _processSystemCall() private {
+        uint256 slots = _slotsPerRequest();
+        uint256 recordLength = 20 + _inputLength();
+        uint256 max = _maxRequestsPerBlock();
+        assembly ("memory-safe") {
+            let tail := sload(queueTail.slot)
+            let head := sload(queueHead.slot)
+            let n := sub(tail, head)
+            if iszero(gt(max, n)) { n := max }
+
+            // Writes each record one word at a time. The last word's zero padding spills into
+            // the next record, which then overwrites it, or past the end of the returned bytes.
+            let records := mload(0x40)
+            for { let i := 0 } iszero(eq(i, n)) { i := add(i, 1) } {
+                let slot := add(QUEUE_OFFSET, mul(add(head, i), slots))
+                let offset := add(records, mul(i, recordLength))
+                mstore(offset, shl(96, sload(slot)))
+                offset := add(offset, 20)
+                for { let k := 1 } lt(k, slots) { k := add(k, 1) } {
+                    mstore(offset, sload(add(slot, k)))
+                    offset := add(offset, 32)
+                }
+            }
+
+            let newHead := add(head, n)
+            switch eq(newHead, tail)
+            case 1 {
+                sstore(queueHead.slot, 0)
+                sstore(queueTail.slot, 0)
+            }
+            default { sstore(queueHead.slot, newHead) }
+
+            switch calldatasize()
+            case 0 {
+                if eq(sload(excess.slot), not(0)) {
+                    sstore(excess.slot, 0)
+                    sstore(count.slot, 0)
+                }
+            }
+            default { sstore(excess.slot, not(0)) }
+
+            return(records, mul(n, recordLength))
+        }
+    }
+
+    // --- Parameters ---------------------------------------------------------------------------
+
+    /// @dev The length of the EIP's input: the BLS public key followed by `pq_data`.
+    function _inputLength() internal pure virtual returns (uint256);
+
+    function _slotsPerRequest() internal pure virtual returns (uint256);
+
+    function _targetRequestsPerBlock() internal pure virtual returns (uint256);
+
+    function _maxRequestsAddedPerBlock() internal pure virtual returns (uint256);
+
+    function _maxRequestsPerBlock() internal pure virtual returns (uint256);
 }

@@ -14,14 +14,14 @@ use signatures::lean_xmss::*;
 
 const CONTRACT_VECTORS: &str = "../contracts/test/vectors/leanxmss_pop.json";
 
-/// The forge tests etch the registration contracts at these addresses, on this chain id.
+/// The chain ID the forge tests run on.
 const FORGE_CHAIN_ID: u64 = 31337;
-const VALIDATOR_REGISTRATION: [u8; 20] = address(0x7a11);
-const BUILDER_REGISTRATION: [u8; 20] = address(0xb111);
 
-/// Proofs of possession sign in bottom tree 0xFFFF, whose leaf indices never sign attestations.
-const POP_TREE: u32 = 0xFFFF;
-const POP_LEAF_BASE: LeafIndex = POP_TREE << LAYER_HEIGHT;
+/// Proofs of possession are signed at leaf index 0, which EIP-8450 reserves for them
+/// (`PQ_POSSESSION_XMSS_INDEX`).
+const POP_LEAF: LeafIndex = 0;
+
+type BlsPubkey = [u8; 48];
 
 fn main() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(CONTRACT_VECTORS);
@@ -39,31 +39,26 @@ fn pop_domain() -> [u8; 32] {
     hash(b"leanXMSS registration proof of possession v1")
 }
 
-/// The message a registration's proof of possession signs.
-fn pop_message(
-    chain_id: u64,
-    contract: &[u8; 20],
-    stake_id: u64,
-    pubkey: &[u8; PUB_KEY_SIZE],
-) -> Message {
-    let mut chain_id_word = [0; 32];
-    chain_id_word[24..].copy_from_slice(&chain_id.to_be_bytes());
-    hash(
-        &[
-            &pop_domain()[..],
-            &chain_id_word,
-            contract,
-            &stake_id.to_be_bytes(),
-            pubkey,
-        ]
-        .concat(),
-    )
+/// The message a proof of possession signs, which binds the XMSS key to one BLS key on one chain.
+fn pop_message(chain_id: u64, bls_pubkey: &BlsPubkey, xmss_pubkey: &[u8; PUB_KEY_SIZE]) -> Message {
+    hash(&[&pop_domain()[..], &word(chain_id), bls_pubkey, xmss_pubkey].concat())
 }
 
-/// The leaf index that signs the proof of possession of `message`: in the PoP tree, the leaf
-/// its last two bytes name.
-fn pop_leaf(message: &Message) -> LeafIndex {
-    POP_LEAF_BASE | LeafIndex::from(u16::from_be_bytes([message[30], message[31]]))
+/// 48 bytes derived from a label, standing in for a BLS public key. The registration contracts
+/// don't check that it's a valid one.
+fn bls_pubkey(label: &str) -> BlsPubkey {
+    let high = hash(format!("pq-staking-contracts BLS key {label}").as_bytes());
+    let mut pubkey = [0; 48];
+    pubkey[..32].copy_from_slice(&high);
+    pubkey[32..].copy_from_slice(&hash(&high)[..16]);
+    pubkey
+}
+
+/// `value` as a 32-byte big-endian word.
+fn word(value: u64) -> [u8; 32] {
+    let mut out = [0; 32];
+    out[24..].copy_from_slice(&value.to_be_bytes());
+    out
 }
 
 /// Signs with one key, and refuses to sign two different messages at one leaf index.
@@ -99,14 +94,22 @@ impl Signer {
         signature.to_bytes()
     }
 
-    /// A registration of this key for `stake_id` in `contract`.
-    fn registration(&mut self, contract: &[u8; 20], stake_id: u64) -> Registration {
-        let message = pop_message(FORGE_CHAIN_ID, contract, stake_id, &self.pubkey);
-        let leaf_index = pop_leaf(&message);
-        Registration {
-            contract: *contract,
-            stake_id,
-            pubkey: self.pubkey,
+    /// This key's proof of possession for `bls_pubkey`.
+    fn proof(&mut self, bls_pubkey: &BlsPubkey) -> Proof {
+        let message = pop_message(FORGE_CHAIN_ID, bls_pubkey, &self.pubkey);
+        self.proof_of(bls_pubkey, message, POP_LEAF)
+    }
+
+    /// Signs `message` at `leaf_index`, and returns it with the keys it's meant to bind.
+    fn proof_of(
+        &mut self,
+        bls_pubkey: &BlsPubkey,
+        message: Message,
+        leaf_index: LeafIndex,
+    ) -> Proof {
+        Proof {
+            bls_pubkey: *bls_pubkey,
+            xmss_pubkey: self.pubkey,
             message,
             leaf_index,
             signature: self.sign(leaf_index, &message),
@@ -114,23 +117,21 @@ impl Signer {
     }
 }
 
-struct Registration {
-    contract: [u8; 20],
-    stake_id: u64,
-    pubkey: [u8; PUB_KEY_SIZE],
+struct Proof {
+    bls_pubkey: BlsPubkey,
+    xmss_pubkey: [u8; PUB_KEY_SIZE],
     message: Message,
     leaf_index: LeafIndex,
     signature: [u8; SIG_SIZE],
 }
 
-impl Registration {
+impl Proof {
     fn json(&self, indent: &str) -> String {
         object(
             indent,
             &[
-                ("contract", hex(&self.contract)),
-                ("stakeId", self.stake_id.to_string()),
-                ("pubkey", hex(&self.pubkey)),
+                ("blsPubkey", hex(&self.bls_pubkey)),
+                ("xmssPubkey", hex(&self.xmss_pubkey)),
                 ("message", hex(&self.message)),
                 ("leafIndex", self.leaf_index.to_string()),
                 ("signature", hex(&self.signature)),
@@ -139,50 +140,41 @@ impl Registration {
     }
 }
 
+/// Proofs of possession for the registration tests. They don't depend on the role: a proof that
+/// registers an XMSS key for a BLS key works in both the validator and the builder contract.
 fn contract_vectors() -> String {
-    let (mut key_a, mut key_b) = thread::scope(|s| {
-        let key_b = s.spawn(|| Signer::new("test key B"));
-        (Signer::new("test key A"), key_b.join().unwrap())
+    let [mut key_a, mut key_b, mut key_c, mut key_d] = thread::scope(|s| {
+        ["A", "B", "C", "D"]
+            .map(|label| s.spawn(move || Signer::new(&format!("test key {label}"))))
+            .map(|key| key.join().unwrap())
     });
 
-    // Key A registers twice, as a validator and as a builder, and each registration lands on its
-    // own leaf.
-    let registrations = [
-        key_a.registration(&VALIDATOR_REGISTRATION, 3),
-        key_a.registration(&BUILDER_REGISTRATION, 3),
-        key_b.registration(&VALIDATOR_REGISTRATION, 4),
+    let proofs = [
+        key_a.proof(&bls_pubkey("0")),
+        key_b.proof(&bls_pubkey("1")),
+        key_c.proof(&bls_pubkey("2")),
     ];
-    assert_ne!(registrations[0].leaf_index, registrations[1].leaf_index);
 
-    // The first registration's message signed at a neighbouring PoP leaf: a valid signature that
-    // the registration contract must reject, because it derives the leaf from the message.
-    let wrong_leaf = registrations[0].leaf_index ^ 1;
-    let wrong_leaf = Registration {
-        leaf_index: wrong_leaf,
-        signature: key_a.sign(wrong_leaf, &registrations[0].message),
-        ..registrations[0]
-    };
+    // The first proof's message signed at leaf 1. The signature is valid, but the contracts must
+    // reject it because a proof of possession must be at leaf 0.
+    let wrong_leaf = key_a.proof_of(&proofs[0].bls_pubkey, proofs[0].message, POP_LEAF + 1);
 
-    let registrations: Vec<_> = registrations.iter().map(|r| r.json("    ")).collect();
+    // A signature at leaf 0 of the message without the domain, which the contracts must reject.
+    let bls = bls_pubkey("3");
+    let message = hash(&[&word(FORGE_CHAIN_ID)[..], &bls, &key_d.pubkey].concat());
+    let no_domain = key_d.proof_of(&bls, message, POP_LEAF);
+
+    let proofs: Vec<_> = proofs.iter().map(|p| p.json("    ")).collect();
     object(
         "",
         &[
             ("chainId", FORGE_CHAIN_ID.to_string()),
             ("popDomain", hex(&pop_domain())),
-            (
-                "registrations",
-                format!("[\n    {}\n  ]", registrations.join(",\n    ")),
-            ),
-            ("wrongLeafRegistration", wrong_leaf.json("  ")),
+            ("proofs", format!("[\n    {}\n  ]", proofs.join(",\n    "))),
+            ("wrongLeaf", wrong_leaf.json("  ")),
+            ("noDomain", no_domain.json("  ")),
         ],
     ) + "\n"
-}
-
-const fn address(low: u16) -> [u8; 20] {
-    let mut out = [0; 20];
-    out[18] = (low >> 8) as u8;
-    out[19] = low as u8;
-    out
 }
 
 /// A JSON object of the given fields, each value already JSON, closed at `indent`.

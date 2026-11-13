@@ -20,28 +20,27 @@ verifier (`contracts/src/LeanXmss.sol`) must match the spec at that commit byte 
 
 EthLib doesn't define this part, so it is specified here.
 
-Proofs of possession use the PoP range: bottom tree `0xFFFF`, i.e. leaf indices
-`0xFFFF0000 … 0xFFFFFFFF`. These 65,536 leaf indices MUST NOT be used for attestations.
+A proof of possession is a signature at leaf index 0 of
 
-- Message:
-  `M = K(DOMAIN ‖ chain_id (32) ‖ registration_contract (20) ‖ stake_id (8) ‖ pq_pubkey (32))`,
-  with `K` Keccak-256, `DOMAIN = K("leanXMSS registration proof of possession v1")` and the
-  integers big-endian.
-- Leaf index: `0xFFFF0000 | (M mod 2¹⁶)`, i.e. the leaf within the tree is the last two bytes of
-  `M`. A leanXMSS signature carries its leaf index, and the registration contract rejects a
-  signature made at any other leaf.
+```
+M = K(DOMAIN ‖ chain_id (32) ‖ bls_pubkey (48) ‖ xmss_pubkey (32))
+```
 
-Binding the registration contract's address stops a copied validator registration from being
-replayed into the builder registration contract (and the reverse). Binding `stake_id` and
-`chain_id` stops replay onto another stake or chain.
+with `K` Keccak-256, `DOMAIN = K("leanXMSS registration proof of possession v1")` and the chain
+ID a big-endian word. A leanXMSS signature carries its leaf index, and the registration contracts
+reject a signature at any other leaf.
 
-A leaf index must never sign two different messages: its key is one-time, and two signatures
-reveal every chain at the smaller of their two positions. Deriving the leaf from `M` gives each
-distinct registration (chain, role, stake) its own leaf, so registering one key several times
-does not reuse a leaf (issue #2). Two different messages land on the same leaf with probability
-about `n² / 2¹⁷` for `n` registrations of one key (0.005% for 3). A signer MUST track the PoP
-leaves it has used and refuse to sign a different message on one of them; the operator then
-registers with another stake.
+Leaf 0 is [EIP-8450](https://eips.ethereum.org/EIPS/eip-8450)'s `PQ_POSSESSION_XMSS_INDEX`,
+the leaf it reserves for proofs of possession. EIP-8450 signs an SSZ signing root instead of `M`,
+under a domain derived from the network's genesis, and leaf 0 can't sign both, so `M` is
+proposed as EIP-8450's possession message. A contract can compute `M` with one Keccak call and
+reads the chain ID at runtime, so one bytecode serves every network.
+
+A leaf is a one-time key: once it signs two different messages, anyone can forge a signature at
+it (issue #2). Leaf 0 MUST sign only the key's proof of possession, so a key is registered for one
+BLS key on one chain. Registering it again there signs the same `M`, which is safe. `M` binds
+neither the role nor a contract address: a validator and a builder that share a BLS key sign the
+same message, as in EIP-8450, and one proof registers the key for both.
 
 ## Vectors
 
@@ -52,7 +51,7 @@ registers with another stake.
 
 ```sh
 ./sync-vectors.sh <ethlib-commit>   # copies EthLib's cases at that commit and records it
-cargo run --release                 # ~20 s on 16 cores
+cargo run --release                 # ~30 s on 16 cores
 ```
 
 The generator (`src/main.rs`) signs with leanVM's Rust implementation of leanXMSS, at the commit
