@@ -1,0 +1,19 @@
+name = "LeanXmssFv"
+defaultTargets = ["LeanXmssFv"]
+
+# EthLib at the commit in contracts/test/vectors/ethlib/COMMIT. CI checks that the two agree.
+[[require]]
+name = "EthLib"
+git = "https://github.com/ethereum/EthLib"
+rev = "6630abba6344f9d15ae139d4bddbb74baf6285ea"
+
+# Every file is a module, as in EthLib, so that the logic in `Logic/` can move upstream as it is.
+[[lean_lib]]
+name = "LeanXmssFv"
+requiresModuleSystem = true
+
+# Runs the bytecode on EthLib's EVM over the vectors: `lake exe vectors`. No proof rests on it.
+[[lean_exe]]
+name = "vectors"
+srcDir = "test"
+root = "Vectors"

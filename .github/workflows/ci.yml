@@ -34,6 +34,21 @@ jobs:
       - name: Build
         run: forge build --sizes
 
+      # The proofs in fv/ are about the bytecode in fv/LeanXmssFv/Code/, which is generated from
+      # the build, so it must be what the script writes. fv.yml builds the proofs.
+      - name: Bytecode of the proofs
+        run: python3 ../fv/scripts/gen-code.py --check
+
+      # The proofs are about EthLib's leanXMSS at the commit the vectors come from.
+      - name: EthLib commit of the proofs
+        run: |
+          proofs=$(jq -r '.packages[] | select(.name == "EthLib") | .rev' ../fv/lake-manifest.json)
+          vectors=$(cat test/vectors/ethlib/COMMIT)
+          if [ "$proofs" != "$vectors" ]; then
+            echo "fv/ follows EthLib $proofs, and the vectors come from $vectors"
+            exit 1
+          fi
+
       - name: Test
         run: forge test -vvv
 

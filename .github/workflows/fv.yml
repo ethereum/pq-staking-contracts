@@ -1,0 +1,59 @@
+name: fv
+
+# The proofs of the leanXMSS verifier, in fv/. They take long to build, so they have their own
+# workflow, which isn't a required check. ci.yml checks that fv/LeanXmssFv/Code/ is the bytecode
+# that forge builds, so a change to the contracts shows up here as a change under fv/.
+on:
+  push:
+    branches: [main]
+    paths: ["fv/**", "contracts/test/vectors/**", ".github/workflows/fv.yml"]
+  pull_request:
+    paths: ["fv/**", "contracts/test/vectors/**", ".github/workflows/fv.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  proofs:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fv
+    steps:
+      - uses: actions/checkout@v5
+
+      # elan from a release, with its hash checked. The installer script at elan's master would
+      # download whichever release is the latest. The Lean version comes from fv/lean-toolchain.
+      - name: Install elan
+        env:
+          ELAN_VERSION: v4.2.4
+          ELAN_SHA256: 42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o elan.tar.gz \
+            "https://github.com/leanprover/elan/releases/download/$ELAN_VERSION/elan-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$ELAN_SHA256  elan.tar.gz" | sha256sum --check
+          tar -xzf elan.tar.gz
+          ./elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      # Clones the packages of the manifest, and downloads Mathlib's build.
+      - name: Mathlib's cache
+        run: lake exe cache get
+
+      # EthLib isn't in Mathlib's cache, and its build takes most of the time, so it is kept
+      # between runs with the build of fv/. It is restored once Lake has cloned the packages.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            fv/.lake/packages/EthLib/.lake
+            fv/.lake/build
+          key: fv-${{ hashFiles('fv/lean-toolchain', 'fv/lake-manifest.json') }}-${{ hashFiles('fv/lakefile.toml', 'fv/*.lean', 'fv/LeanXmssFv/**', 'fv/test/**') }}
+          restore-keys: fv-${{ hashFiles('fv/lean-toolchain', 'fv/lake-manifest.json') }}-
+
+      - name: Build
+        run: lake build
+
+      # The bytecode on EthLib's EVM, over the vectors the forge tests run.
+      - name: Vectors
+        run: lake exe vectors
